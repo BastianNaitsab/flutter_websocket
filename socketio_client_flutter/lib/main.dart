@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
-import 'dart:async';
+import 'package:socketio_client_flutter/model/message.dart';
+
+import 'services/websocket_service.dart';
 
 void main() => runApp(const MyApp());
 
@@ -12,18 +13,13 @@ class MyApp extends StatelessWidget {
     const title = 'Socket.IO Demo';
     return const MaterialApp(
       title: title,
-      home: MyHomePage(
-        title: title,
-      ),
+      home: MyHomePage(title: title),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({
-    super.key,
-    required this.title,
-  });
+  const MyHomePage({super.key, required this.title});
 
   final String title;
 
@@ -34,39 +30,19 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _controller = TextEditingController();
 
-  // Para crear el cliente
-  final IO.Socket _socket = IO.io('http://localhost:3000', <String, dynamic>{
-    'transports': ['websocket'],
-    'autoConnect': false,
-  });
-
-  // Crear varios StreamController para eventos diferentes
-  final StreamController<String> _mensajeStreamController =
-      StreamController<String>();
+  // Instancia del servicio
+  final WebSocketService _webSocketService = WebSocketService();
 
   @override
   void initState() {
     super.initState();
-    _socket.connect();
+    const String wsUrl = 'http://localhost:3000';
+    // Conectar al WebSocket
+    _webSocketService.connect(wsUrl);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Para escuchar se usa _socket.on
-    _socket.on('connect', (_) {
-      debugPrint('Conectado al servidor');
-    });
-
-    _socket.on('disconnect', (_) {
-      debugPrint('Desconectado del servidor');
-    });
-
-    // Escuchar el evento 'mensaje' y agregar el dato al StreamController correspondiente
-    _socket.on('mensaje', (data) {
-      debugPrint('Mensaje recibido: $data');
-      _mensajeStreamController.sink.add(data);
-    });
-
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
@@ -84,16 +60,14 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             const SizedBox(height: 24),
 
-            // StreamBuilder para el evento 'mensaje'
+            // Usar el StreamBuilder con los Streams del WebSocketService
+
             StreamBuilder<String>(
-              stream: _mensajeStreamController.stream,
+              stream: _webSocketService.messageStream,
               builder: (context, snapshot) {
-                // Para cuando esta cargando la conexion
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const CircularProgressIndicator();
-                }
-                // Para cuando se tienen los datos
-                else if (snapshot.hasData) {
+                } else if (snapshot.hasData) {
                   return Text('Mensaje: ${snapshot.data}',
                       style: const TextStyle(fontSize: 16));
                 } else {
@@ -103,28 +77,74 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
 
             const SizedBox(height: 24),
+
+            StreamBuilder<String>(
+              stream: _webSocketService.messageEveryoneStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const CircularProgressIndicator();
+                } else if (snapshot.hasData) {
+                  try {
+                    // Se debe decodificar el dato para obtener el modelo
+                    Message decodedMessage = Message.fromJson(snapshot.data!);
+                    return Text(
+                        'Mensaje complejo de ${decodedMessage.user}: ${decodedMessage.message}',
+                        style: const TextStyle(fontSize: 16));
+                  } catch (error) {
+                    return Text("Error al procesar el mensaje: $error");
+                  }
+                } else {
+                  return const Text('Esperando mensaje...');
+                }
+              },
+            ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _sendMessage,
-        tooltip: 'Send message',
-        child: const Icon(Icons.send),
+      floatingActionButton: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            onPressed: _sendMessageEveryone,
+            tooltip: 'Send message everyone',
+            child: const Icon(Icons.send_and_archive),
+          ),
+          const SizedBox(width: 20),
+          FloatingActionButton(
+            onPressed: _sendMessage,
+            tooltip: 'Send message',
+            child: const Icon(Icons.send),
+          ),
+        ],
       ),
     );
   }
 
-  // Para enviar se usa _socket.emit
+  // Enviar el mensaje usando el servicio WebSocket
   void _sendMessage() {
+    // para enviar datos complejos convertir el dato con .toJson
     if (_controller.text.isNotEmpty) {
-      _socket.emit('mensaje', _controller.text);
+      _webSocketService.sendMessage(_controller.text);
+    }
+  }
+
+  // Enviar mensaje a todos con dato complejo
+  void _sendMessageEveryone() {
+    if (_controller.text.isNotEmpty) {
+      Message message = Message(
+        user: "user",
+        message: _controller.text,
+      );
+
+      // Se debe codificar el modelo para enviar en formato cadena de texto
+      String encodedMessage = message.toJson();
+      _webSocketService.sendMessageEveryone(encodedMessage);
     }
   }
 
   @override
   void dispose() {
-    _socket.disconnect();
-    _mensajeStreamController.close(); // Cerrar el StreamController
+    _webSocketService.disconnect(); // Desconectar WebSocket
     _controller.dispose();
     super.dispose();
   }
